@@ -1,0 +1,6 @@
+{
+  "appId": "com.focusrest.timer",
+  "appName": "Focus Rest Timer",
+  "webDir": "www",
+  "android": { "backgroundColor": "#141413" }
+}
