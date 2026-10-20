@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Focus & Rest Timer</title>
+<style>
+:root{--bg:#f6f5f1;--fg:#1d1d1b;--muted:#6b6a65;--focus:#2f6fed;--rest:#1f9d6b;--card:#ffffff;--line:#e3e1da;box-sizing:border-box}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#f1f0ea;--muted:#9a988f;--focus:#6b9bff;--rest:#4cc79a;--card:#1e1e1c;--line:#2e2d2a;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+main{width:100%;max-width:420px;padding:24px;text-align:center}
+.phase{font-size:14px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.ring{position:relative;width:min(78vw,300px);aspect-ratio:1;margin:20px auto}
+svg{width:100%;height:100%;transform:rotate(-90deg)}
+.track{stroke:var(--line)}
+.prog{stroke:var(--accent);transition:stroke-dashoffset .25s linear,stroke .3s}
+.time{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:clamp(44px,15vw,64px);font-weight:600;font-variant-numeric:tabular-nums}
+.sub{font-size:14px;color:var(--muted);font-weight:400;margin-top:4px}
+.btns{display:flex;gap:10px;justify-content:center;margin-top:8px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:12px 20px;border-radius:12px;cursor:pointer;min-width:90px}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;min-width:130px}
+button:active{transform:scale(.97)}
+.note{margin-top:22px;font-size:12.5px;color:var(--muted);line-height:1.5}
+#stopAlarm{display:none;margin:14px auto 0;background:#d9453a;border-color:#d9453a;color:#fff}
+</style>
+</head>
+<body>
+<main>
+  <div class="phase" id="phase">Focus</div>
+  <div class="ring">
+    <svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="45" fill="none" stroke-width="5"/><circle class="prog" id="prog" cx="50" cy="50" r="45" fill="none" stroke-width="5" stroke-linecap="round"/></svg>
+    <div class="time"><span id="time">60:00</span><span class="sub" id="sub">Ready to focus</span></div>
+  </div>
+  <div class="btns">
+    <button class="primary" id="toggle">Start</button>
+    <button id="skip">Skip</button>
+    <button id="reset">Reset</button>
+  </div>
+  <button id="stopAlarm">Stop alarm</button>
+  <div class="note">Focus 60 minutes, rest 20, repeat. Alerts ring and vibrate even when the app is closed or the phone is locked.</div>
+</main>
+<script>
+const DUR={focus:60*60*1000,rest:20*60*1000};
+const $=id=>document.getElementById(id);
+const C=2*Math.PI*45;
+const prog=$('prog');prog.style.strokeDasharray=C;
+const CAP=window.Capacitor;
+const native=!!(CAP&&CAP.isNativePlatform&&CAP.isNativePlatform());
+const LN=native&&CAP.Plugins?CAP.Plugins.LocalNotifications:null;
+const HP=native&&CAP.Plugins?CAP.Plugins.Haptics:null;
+let S={phase:'focus',running:false,endAt:0,left:DUR.focus};
+try{const r=JSON.parse(localStorage.getItem('frt')||'null');if(r&&DUR[r.phase])S=r}catch(e){}
+function save(){try{localStorage.setItem('frt',JSON.stringify(S))}catch(e){}}
+let ac=null,wake=null,alarmTimer=null,vibTimer=null;
+
+async function initNative(){
+  if(!LN)return;
+  try{await LN.createChannel({id:'timer',name:'Focus & Rest alerts',description:'Alarm when a focus or rest period ends',importance:5,visibility:1,vibration:true})}catch(e){}
+}
+async function scheduleAhead(){
+  if(!LN)return;
+  try{
+    const p=await LN.getPending();
+    if(p.notifications&&p.notifications.length)await LN.cancel({notifications:p.notifications.map(n=>({id:n.id}))});
+    if(!S.running)return;
+    const list=[];let t=S.endAt,ph=S.phase;
+    for(let i=0;i<16;i++){
+      const next=ph==='focus'?'rest':'focus';
+      list.push({id:i+1,title:next==='rest'?'Time to rest':'Time to focus',body:next==='rest'?'Great work! Rest for 20 minutes.':'Break over. Focus for 60 minutes.',channelId:'timer',schedule:{at:new Date(t),allowWhileIdle:true}});
+      t+=DUR[next];ph=next;
+    }
+    await LN.schedule({notifications:list});
+  }catch(e){}
+}
+function audio(){try{if(!ac)ac=new (window.AudioContext||window.webkitAudioContext)();if(ac.state==='suspended')ac.resume()}catch(e){}}
+function beep(t,f){const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.4,t+.02);g.gain.linearRampToValueAtTime(0,t+.35);o.connect(g);g.connect(ac.destination);o.start(t);o.stop(t+.4)}
+function ring(){
+  stopAlarm();
+  try{if(ac){audio();const n=ac.currentTime;for(let i=0;i<8;i++)beep(n+i*.8,i%2?880:660)}}catch(e){}
+  try{
+    if(HP){let c=0;const go=()=>{HP.vibrate({duration:600});if(++c>=5)clearInterval(vibTimer)};go();vibTimer=setInterval(go,800)}
+    else if(navigator.vibrate)navigator.vibrate([600,200,600,200,600,200,600,200,600]);
+  }catch(e){}
+  $('stopAlarm').style.display='block';
+  alarmTimer=setTimeout(stopAlarm,7000);
+}
+function stopAlarm(){clearTimeout(alarmTimer);clearInterval(vibTimer);$('stopAlarm').style.display='none';try{navigator.vibrate&&navigator.vibrate(0)}catch(e){}}
+async function lock(){try{if('wakeLock' in navigator&&!wake){wake=await navigator.wakeLock.request('screen');wake.addEventListener('release',()=>{wake=null})}}catch(e){}}
+function unlock(){try{wake&&wake.release()}catch(e){}wake=null}
+function fmt(ms){const s=Math.max(0,Math.ceil(ms/1000));return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
+function render(){
+  const left=S.running?Math.max(0,S.endAt-Date.now()):S.left;
+  const isF=S.phase==='focus';
+  document.documentElement.style.setProperty('--accent',isF?'var(--focus)':'var(--rest)');
+  $('phase').textContent=isF?'Focus':'Rest';
+  $('time').textContent=fmt(left);
+  $('sub').textContent=S.running?(isF?'Stay focused':'Take a break'):(isF?'Ready to focus':'Paused');
+  $('toggle').textContent=S.running?'Pause':'Start';
+  prog.style.strokeDashoffset=C*(1-left/DUR[S.phase]);
+}
+function tick(){
+  const now=Date.now();
+  if(S.running&&now>=S.endAt){
+    let n=0;
+    while(now>=S.endAt&&n++<1000){S.phase=S.phase==='focus'?'rest':'focus';S.endAt+=DUR[S.phase]}
+    S.left=S.endAt-now;
+    if(now-(S.endAt-DUR[S.phase])<15000)ring();
+    save();scheduleAhead();
+  }
+  render();
+}
+$('toggle').onclick=async()=>{
+  audio();
+  if(S.running){S.left=Math.max(0,S.endAt-Date.now());S.running=false;unlock()}
+  else{
+    if(LN){try{await LN.requestPermissions()}catch(e){}}
+    S.endAt=Date.now()+S.left;S.running=true;lock();
+  }
+  save();render();scheduleAhead();
+};
+$('skip').onclick=()=>{audio();stopAlarm();S.phase=S.phase==='focus'?'rest':'focus';S.left=DUR[S.phase];S.endAt=Date.now()+S.left;save();render();scheduleAhead()};
+$('reset').onclick=()=>{stopAlarm();S={phase:'focus',running:false,endAt:0,left:DUR.focus};unlock();save();render();scheduleAhead()};
+$('stopAlarm').onclick=stopAlarm;
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(S.running)lock();tick()}});
+initNative().then(scheduleAhead);
+setInterval(tick,250);tick();
+</script>
+</body>
+</html>
